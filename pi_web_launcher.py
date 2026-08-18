@@ -233,7 +233,7 @@ def effective_model(config: dict[str, Any]) -> str:
     return str(config.get("image_model", "")).strip()
 
 
-def validate_config(config: dict[str, Any]) -> tuple[str, int, str]:
+def endpoint_config(config: dict[str, Any]) -> tuple[str, int]:
     hostname = str(config.get("hostname", "")).strip()
     if not hostname:
         raise LauncherError("Hostname 不能为空。")
@@ -243,6 +243,11 @@ def validate_config(config: dict[str, Any]) -> tuple[str, int, str]:
     port = int(raw_port)
     if not 1 <= port <= 65535:
         raise LauncherError("Port 必须是 1 到 65535 之间的整数。")
+    return hostname, port
+
+
+def validate_config(config: dict[str, Any]) -> tuple[str, int, str]:
+    hostname, port = endpoint_config(config)
     password = str(config.get("password", ""))
     if not password:
         raise LauncherError("PI_WEB_PASSWORD 不能为空。")
@@ -294,6 +299,20 @@ def port_is_open(hostname: str, port: int, timeout: float = 0.35) -> bool:
             return True
     except OSError:
         return False
+
+
+def strict_service_check(hostname: str, port: int, timeout: float = 0.75) -> bool:
+    target = readiness_host(hostname)
+    connection = http.client.HTTPConnection(target, port, timeout=timeout)
+    try:
+        connection.request("GET", "/")
+        response = connection.getresponse()
+        response.read(1)
+        return 200 <= response.status < 400
+    except OSError:
+        return False
+    finally:
+        connection.close()
 
 
 def wait_for_ready(hostname: str, port: int, process: subprocess.Popen[Any], timeout: float = PI_WEB_READY_TIMEOUT) -> None:
@@ -427,7 +446,10 @@ class LauncherApp:
         self.controller = PiWebProcess(self.base_dir)
         self.state = STATE_STOPPED
         self._refreshing = False
+        self._status_checking = False
         self.running_urls: list[str] = []
+        self.service_detected = False
+        self.service_endpoint: tuple[str, int] | None = None
         self.password_visible = False
 
         self.root.title("Pi Web Launcher")
@@ -455,6 +477,7 @@ class LauncherApp:
         self._apply_mode()
         self._update_controls()
         self.root.after(100, self.refresh_models)
+        self.root.after(300, self.refresh_status)
 
     def _configure_theme(self) -> None:
         colors = DARK_COLORS
@@ -520,7 +543,7 @@ class LauncherApp:
             lightcolor=colors["border"],
             darkcolor=colors["border"],
             focuscolor=colors["accent"],
-            padding=(12, 7),
+            padding=(0, 7),
         )
         style.map(
             "TButton",
@@ -537,6 +560,7 @@ class LauncherApp:
             background=colors["accent"],
             foreground=colors["text"],
             bordercolor=colors["accent"],
+            padding=(0, 7),
         )
         style.map("Accent.TButton", background=[("active", colors["accent_hover"]), ("pressed", colors["accent"])])
 
@@ -552,7 +576,7 @@ class LauncherApp:
         self.model_combo = ttk.Combobox(model_row, textvariable=self.model_value, state="readonly", width=42)
         self.model_combo.grid(row=0, column=0, sticky="ew")
         self.model_combo.bind("<<ComboboxSelected>>", self._on_model_selected)
-        self.refresh_button = ttk.Button(model_row, text="刷新", command=self.refresh_models)
+        self.refresh_button = ttk.Button(model_row, text="刷新", width=9, command=self.refresh_models)
         self.refresh_button.grid(row=0, column=1, padx=(8, 0))
 
         ttk.Label(frame, text="自定义模型名称").grid(row=2, column=0, sticky="w")
@@ -575,7 +599,7 @@ class LauncherApp:
         password_row.columnconfigure(0, weight=1)
         self.password_entry = ttk.Entry(password_row, textvariable=self.password, show="*", width=45)
         self.password_entry.grid(row=0, column=0, sticky="ew")
-        self.password_toggle = ttk.Button(password_row, text="显示", command=self._toggle_password)
+        self.password_toggle = ttk.Button(password_row, text="显示", width=9, command=self._toggle_password)
         self.password_toggle.grid(row=0, column=1, padx=(8, 0))
         ttk.Label(frame, text="HTTP Basic Auth 用户名为 pi", style="Muted.TLabel").grid(row=7, column=0, sticky="w", pady=(2, 10))
 
@@ -586,16 +610,21 @@ class LauncherApp:
         address_row.grid(row=10, column=0, sticky="ew", pady=(4, 12))
         address_row.columnconfigure(0, weight=1)
         ttk.Label(address_row, textvariable=self.address, justify="left", style="Address.TLabel").grid(row=0, column=0, sticky="w")
-        self.open_button = ttk.Button(address_row, text="打开", command=self.open_running_url)
+        self.open_button = ttk.Button(address_row, text="打开", width=9, command=self.open_running_url)
         self.open_button.grid(row=0, column=1, sticky="n", padx=(12, 0))
 
         buttons = ttk.Frame(frame)
-        buttons.grid(row=11, column=0, sticky="e")
-        self.stop_button = ttk.Button(buttons, text="停止", command=self.stop)
-        self.stop_button.grid(row=0, column=0, padx=(0, 8))
-        self.restart_button = ttk.Button(buttons, text="重启", command=self.restart)
-        self.restart_button.grid(row=0, column=1, padx=(0, 8))
-        self.start_button = ttk.Button(buttons, text="启动", style="Accent.TButton", command=self.start)
+        buttons.grid(row=11, column=0, sticky="ew")
+        buttons.columnconfigure(0, weight=1)
+        self.refresh_status_button = ttk.Button(buttons, text="刷新状态", width=9, command=self.refresh_status)
+        self.refresh_status_button.grid(row=0, column=0, sticky="w")
+        actions = ttk.Frame(buttons)
+        actions.grid(row=0, column=1, sticky="e")
+        self.stop_button = ttk.Button(actions, text="停止", width=9, command=self.stop)
+        self.stop_button.grid(row=0, column=0, padx=(0, 6))
+        self.restart_button = ttk.Button(actions, text="重启", width=9, command=self.restart)
+        self.restart_button.grid(row=0, column=1, padx=(0, 6))
+        self.start_button = ttk.Button(actions, text="启动", width=9, style="Accent.TButton", command=self.start)
         self.start_button.grid(row=0, column=2)
 
     def _set_status(self, message: str, tone: str = "muted") -> None:
@@ -630,11 +659,21 @@ class LauncherApp:
 
     def _update_controls(self) -> None:
         states = control_states(self.state)
+        try:
+            current_endpoint = endpoint_config(self._form_config())
+        except LauncherError:
+            current_endpoint = None
+        if self.state == STATE_STOPPED and self.service_detected and current_endpoint == self.service_endpoint:
+            states["start"] = "disabled"
         self.start_button.configure(state=states["start"])
         self.stop_button.configure(state=states["stop"])
         self.restart_button.configure(state=states["restart"])
         self.refresh_button.configure(state="disabled" if self._refreshing else "normal")
-        self.open_button.configure(state="normal" if self.state == STATE_RUNNING and self.running_urls else "disabled")
+        self.refresh_status_button.configure(state="disabled" if self._status_checking else "normal")
+        service_matches_form = self.service_detected and current_endpoint == self.service_endpoint
+        self.open_button.configure(
+            state="normal" if self.running_urls and (self.state == STATE_RUNNING or service_matches_form) else "disabled"
+        )
 
     def _form_config(self) -> dict[str, Any]:
         config = normalize_config(self.config)
@@ -654,6 +693,49 @@ class LauncherApp:
         config = self._form_config()
         validate_config(config)
         return config
+
+    def refresh_status(self) -> None:
+        if self._status_checking:
+            return
+        try:
+            hostname, port = endpoint_config(self._form_config())
+        except LauncherError as exc:
+            self._set_status(f"状态检查失败：{exc}", "error")
+            return
+        self._status_checking = True
+        self._set_status("正在检查 pi-web 状态…")
+        self._update_controls()
+
+        def worker() -> None:
+            try:
+                available = strict_service_check(hostname, port)
+            except (OSError, http.client.HTTPException):
+                available = False
+            self.root.after(0, lambda: self._status_checked(hostname, port, available))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _status_checked(self, hostname: str, port: int, available: bool) -> None:
+        self._status_checking = False
+        if available:
+            self.service_detected = True
+            self.service_endpoint = (hostname, port)
+            self.running_urls = access_urls(hostname, port)
+            if self.state == STATE_RUNNING:
+                self._set_status("pi-web 运行中", "success")
+            else:
+                self._set_status("检测到 pi-web 正在运行（由其他进程启动）", "success")
+            self.address.set("绑定地址：http://%s:%s\n访问地址：%s" % (hostname, port, "\n".join(self.running_urls)))
+        else:
+            self.service_detected = False
+            self.service_endpoint = None
+            if self.state == STATE_STOPPED:
+                self.running_urls = []
+                self._set_status("未检测到正在运行的 pi-web", "muted")
+                self.address.set("访问地址：未启动")
+            elif self.state == STATE_RUNNING:
+                self._set_status("进程仍在运行，但 HTTP 服务无响应", "error")
+        self._update_controls()
 
     def refresh_models(self) -> None:
         if self._refreshing:
@@ -720,6 +802,8 @@ class LauncherApp:
         self._begin_start(config)
 
     def _begin_start(self, config: dict[str, Any]) -> None:
+        self.service_detected = False
+        self.service_endpoint = None
         self.config = config
         try:
             save_launcher_config(self.config_path, config)
@@ -742,6 +826,8 @@ class LauncherApp:
         threading.Thread(target=worker, daemon=True).start()
 
     def _started(self, config: dict[str, Any]) -> None:
+        self.service_detected = True
+        self.service_endpoint = endpoint_config(config)
         self.state = STATE_RUNNING
         hostname, port, _ = validate_config(config)
         urls = access_urls(hostname, port)
@@ -760,6 +846,8 @@ class LauncherApp:
             self.controller.process = None
             self.controller.running_config = None
             self.running_urls = []
+            self.service_detected = False
+            self.service_endpoint = None
             self.state = STATE_STOPPED
             self._set_status("pi-web 已意外退出", "error")
             self.address.set("访问地址：未启动")
@@ -768,6 +856,8 @@ class LauncherApp:
         self.root.after(1000, self._monitor_process)
 
     def _operation_failed(self, message: str) -> None:
+        self.service_detected = False
+        self.service_endpoint = None
         self.running_urls = []
         self.state = STATE_STOPPED
         self._set_status(f"操作失败：{message}", "error")
@@ -794,6 +884,8 @@ class LauncherApp:
         threading.Thread(target=worker, daemon=True).start()
 
     def _stopped(self) -> None:
+        self.service_detected = False
+        self.service_endpoint = None
         self.running_urls = []
         self.state = STATE_STOPPED
         self._set_status("未启动")
@@ -801,7 +893,7 @@ class LauncherApp:
         self._update_controls()
 
     def open_running_url(self) -> None:
-        if self.state == STATE_RUNNING and self.running_urls:
+        if self.running_urls and (self.state == STATE_RUNNING or self.service_detected):
             webbrowser.open(self.running_urls[0])
 
     def restart(self) -> None:

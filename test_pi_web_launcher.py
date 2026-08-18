@@ -21,7 +21,42 @@ class FakeResponse:
         return json.dumps(self.payload).encode("utf-8")
 
 
+class FakeHttpResponse:
+    def __init__(self, status=200):
+        self.status = status
+
+    def read(self, _size=-1):
+        return b"<html>pi-web</html>"
+
+
+class FakeHttpConnection:
+    def __init__(self, _host, _port, timeout=0):
+        self.timeout = timeout
+        self.requested = None
+
+    def request(self, method, path):
+        self.requested = (method, path)
+
+    def getresponse(self):
+        return FakeHttpResponse()
+
+    def close(self):
+        pass
+
+
 class LauncherCoreTests(unittest.TestCase):
+    def test_strict_service_check_requires_http_response(self):
+        with patch.object(launcher.http.client, "HTTPConnection", FakeHttpConnection):
+            self.assertTrue(launcher.strict_service_check("127.0.0.1", 30141))
+
+    def test_strict_service_check_returns_false_when_http_fails(self):
+        class FailingConnection(FakeHttpConnection):
+            def request(self, _method, _path):
+                raise OSError("connection refused")
+
+        with patch.object(launcher.http.client, "HTTPConnection", FailingConnection):
+            self.assertFalse(launcher.strict_service_check("127.0.0.1", 30141))
+
     def test_project_dir_uses_executable_directory_when_frozen(self):
         with patch.object(launcher.sys, "frozen", True, create=True), patch.object(launcher.sys, "executable", "C:/launcher/PiWebLauncher.exe"):
             self.assertEqual(launcher.project_dir(), Path("C:/launcher"))
@@ -192,6 +227,25 @@ class LauncherUiTests(unittest.TestCase):
         self.assertEqual(int(self.app.refresh_button.grid_info()["row"]), 0)
         self.assertEqual(int(self.app.model_combo.grid_info()["column"]), 0)
         self.assertEqual(int(self.app.refresh_button.grid_info()["column"]), 1)
+
+    def test_status_button_is_at_bottom_left_and_status_check_updates_ui(self):
+        self.assertEqual(str(self.app.refresh_status_button.cget("text")), "刷新状态")
+        self.assertEqual(int(self.app.refresh_status_button.grid_info()["column"]), 0)
+        self.assertEqual(int(self.app.refresh_status_button.cget("width")), 9)
+        self.assertEqual(int(self.app.stop_button.cget("width")), 9)
+        self.assertEqual(int(self.app.restart_button.cget("width")), 9)
+        self.assertEqual(int(self.app.start_button.cget("width")), 9)
+        with patch.object(launcher, "strict_service_check", return_value=True), patch.object(self.app.root, "after") as after:
+            self.app.refresh_status()
+            after.assert_called_once()
+        self.app._status_checked("127.0.0.1", 30141, True)
+        self.assertTrue(self.app.service_detected)
+        self.assertEqual(str(self.app.open_button.cget("state")), "normal")
+
+    def test_status_button_uses_disabled_state_while_checking(self):
+        self.app._status_checking = True
+        self.app._update_controls()
+        self.assertEqual(str(self.app.refresh_status_button.cget("state")), "disabled")
 
     def test_open_button_uses_running_snapshot_and_tracks_state(self):
         self.assertEqual(str(self.app.open_button.cget("state")), "disabled")

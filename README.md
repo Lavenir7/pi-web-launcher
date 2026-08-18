@@ -31,7 +31,7 @@ npm install -g @agegr/pi-web@latest
 
 4. Select an image model and configure the hostname, port, and password.
 5. Click **Start**. The launcher opens pi-web in your browser when the service is ready.
-6. Use **Restart** to apply changed settings, **Open** to reopen the running service, and **Stop** to shut it down.
+6. Use **Refresh Status** to perform a strict status check at startup or at any time, **Restart** to apply changed settings, **Open** to reopen the running service, and **Stop** to shut it down.
 
 The Basic Auth username is `pi`. The default password is `123456`; change it before allowing access from other devices.
 
