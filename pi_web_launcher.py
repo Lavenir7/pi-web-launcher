@@ -59,6 +59,8 @@ class LauncherError(Exception):
 
 
 def project_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent
 
 
@@ -347,6 +349,9 @@ class PiWebProcess:
         environment["CLIPROXYAPI_IMAGE_MODEL"] = model
         environment["PI_WEB_PASSWORD"] = str(config["password"])
         command = self.command(hostname, port)
+        creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        if sys.platform == "win32":
+            creationflags |= getattr(subprocess, "CREATE_NO_WINDOW", 0)
         try:
             process = self._popen(
                 command,
@@ -355,7 +360,7 @@ class PiWebProcess:
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+                creationflags=creationflags,
             )
         except OSError as exc:
             raise LauncherError("找不到 pi-web.cmd，请确认 pi-web 已安装并在 PATH 中。") from exc

@@ -22,6 +22,10 @@ class FakeResponse:
 
 
 class LauncherCoreTests(unittest.TestCase):
+    def test_project_dir_uses_executable_directory_when_frozen(self):
+        with patch.object(launcher.sys, "frozen", True, create=True), patch.object(launcher.sys, "executable", "C:/launcher/PiWebLauncher.exe"):
+            self.assertEqual(launcher.project_dir(), Path("C:/launcher"))
+
     def test_normalize_config_uses_defaults_for_missing_values(self):
         config = launcher.normalize_config({"port": 30141})
         self.assertEqual(config["hostname"], launcher.DEFAULT_HOSTNAME)
@@ -115,6 +119,8 @@ class LauncherCoreTests(unittest.TestCase):
         self.assertEqual(kwargs["env"]["CLIPROXYAPI_IMAGE_MODEL"], "image-a")
         self.assertEqual(kwargs["env"]["PI_WEB_PASSWORD"], "runtime-password")
         self.assertNotIn("apiKey", kwargs["env"])
+        if launcher.sys.platform == "win32":
+            self.assertTrue(kwargs["creationflags"] & getattr(launcher.subprocess, "CREATE_NO_WINDOW", 0))
 
     def test_access_urls_map_wildcard_to_local_and_lan_addresses(self):
         with patch.object(launcher, "local_network_addresses", return_value=["192.168.1.8"]):

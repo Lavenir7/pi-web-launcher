@@ -7,10 +7,11 @@ Pi Web Launcher is a Windows desktop application for configuring and managing a 
 ## Requirements
 
 - Windows
-- Python 3.10 or newer with Tkinter
 - Node.js 22.19.0 or newer
 - pi-web installed globally
 - CLIProxyAPI configured in Pi
+
+Python is not required when using `PiWebLauncher.exe`. Python 3.10 or newer with Tkinter is required only when running from source.
 
 Install pi-web if needed:
 
@@ -20,16 +21,17 @@ npm install -g @agegr/pi-web@latest
 
 ## Usage
 
-1. Download or clone this repository.
-2. Double-click `start-pi-web-launcher.cmd`, or run:
+1. Download `PiWebLauncher.exe` from the `dist` directory, or download and clone this repository.
+2. Double-click `PiWebLauncher.exe` to open the launcher without a terminal window.
+3. If running from source, use `start-pi-web-launcher.cmd` or run:
 
    ```powershell
    python .\pi_web_launcher.py
    ```
 
-3. Select an image model and configure the hostname, port, and password.
-4. Click **Start**. The launcher opens pi-web in your browser when the service is ready.
-5. Use **Restart** to apply changed settings, **Open** to reopen the running service, and **Stop** to shut it down.
+4. Select an image model and configure the hostname, port, and password.
+5. Click **Start**. The launcher opens pi-web in your browser when the service is ready.
+6. Use **Restart** to apply changed settings, **Open** to reopen the running service, and **Stop** to shut it down.
 
 The Basic Auth username is `pi`. The default password is `123456`; change it before allowing access from other devices.
 
