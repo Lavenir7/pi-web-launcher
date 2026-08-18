@@ -49,6 +49,15 @@ class LauncherCoreTests(unittest.TestCase):
         with patch.object(launcher.http.client, "HTTPConnection", FakeHttpConnection):
             self.assertTrue(launcher.strict_service_check("127.0.0.1", 30141))
 
+    def test_strict_service_check_accepts_basic_auth_responses(self):
+        for status in (401, 403):
+            class AuthConnection(FakeHttpConnection):
+                def getresponse(self):
+                    return FakeHttpResponse(status)
+
+            with self.subTest(status=status), patch.object(launcher.http.client, "HTTPConnection", AuthConnection):
+                self.assertTrue(launcher.strict_service_check("127.0.0.1", 30141))
+
     def test_strict_service_check_returns_false_when_http_fails(self):
         class FailingConnection(FakeHttpConnection):
             def request(self, _method, _path):

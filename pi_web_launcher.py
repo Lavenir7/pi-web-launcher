@@ -308,7 +308,8 @@ def strict_service_check(hostname: str, port: int, timeout: float = 0.75) -> boo
         connection.request("GET", "/")
         response = connection.getresponse()
         response.read(1)
-        return 200 <= response.status < 400
+        # Basic Auth may return 401/403 even though pi-web is healthy and reachable.
+        return 100 <= response.status < 600
     except OSError:
         return False
     finally:
