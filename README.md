@@ -29,7 +29,7 @@ npm install -g @agegr/pi-web@latest
    python .\pi_web_launcher.py
    ```
 
-4. Select an image model and configure the hostname, port, and password.
+4. Select an image model and configure the hostname, port, and password. Use **Generate** to create a random 16-character password, or **Copy** to copy the current password.
 5. Click **Start**. The launcher opens pi-web in your browser when the service is ready.
 6. Use **Refresh Status** to perform a strict status check at startup or at any time, **Restart** to apply changed settings, **Open** to reopen the running service, and **Stop** to shut it down.
 

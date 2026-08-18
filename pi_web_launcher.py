@@ -5,6 +5,8 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import secrets
+import string
 import shutil
 import socket
 import subprocess
@@ -76,6 +78,14 @@ def agent_dir() -> Path:
     if configured:
         return Path(configured).expanduser()
     return Path.home() / ".pi" / "agent"
+
+
+PASSWORD_ALPHABET = string.ascii_letters + string.digits
+PASSWORD_LENGTH = 16
+
+
+def generate_password(length: int = PASSWORD_LENGTH) -> str:
+    return "".join(secrets.choice(PASSWORD_ALPHABET) for _ in range(length))
 
 
 def default_config() -> dict[str, Any]:
@@ -674,6 +684,10 @@ class LauncherApp:
         self.password_entry.grid(row=0, column=0, sticky="ew")
         self.password_toggle = ttk.Button(password_row, text="显示", width=9, command=self._toggle_password)
         self.password_toggle.grid(row=0, column=1, padx=(8, 0))
+        self.password_generate = ttk.Button(password_row, text="生成", width=9, command=self._generate_password)
+        self.password_generate.grid(row=0, column=2, padx=(6, 0))
+        self.password_copy = ttk.Button(password_row, text="复制", width=9, command=self._copy_password)
+        self.password_copy.grid(row=0, column=3, padx=(6, 0))
         ttk.Label(frame, text="HTTP Basic Auth 用户名为 pi", style="Muted.TLabel").grid(row=7, column=0, sticky="w", pady=(2, 10))
 
         ttk.Separator(frame).grid(row=8, column=0, sticky="ew", pady=(0, 10))
@@ -712,6 +726,17 @@ class LauncherApp:
         self.password_visible = not self.password_visible
         self.password_entry.configure(show="" if self.password_visible else "*")
         self.password_toggle.configure(text="隐藏" if self.password_visible else "显示")
+
+    def _generate_password(self) -> None:
+        self.password.set(generate_password())
+
+    def _copy_password(self) -> None:
+        password = self.password.get()
+        if not password:
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(password)
+        self.root.update()
 
     def _on_model_selected(self, _event: Any = None) -> None:
         selected = self.model_value.get()

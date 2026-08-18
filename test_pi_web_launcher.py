@@ -236,6 +236,21 @@ class LauncherUiTests(unittest.TestCase):
         self.assertEqual(self.root.tk.call(listbox, "cget", "-foreground"), launcher.DARK_COLORS["text"])
         self.assertEqual(self.root.tk.call(listbox, "cget", "-selectbackground"), launcher.DARK_COLORS["accent"])
 
+    def test_generated_password_is_random_sixteen_character_alphanumeric(self):
+        self.app._generate_password()
+        password = self.app.password.get()
+        self.assertEqual(len(password), 16)
+        self.assertTrue(password.isalnum())
+        self.assertNotEqual(password, launcher.DEFAULT_PASSWORD)
+
+    def test_copy_password_uses_tk_clipboard(self):
+        self.app.password.set("copy-this-password")
+        with patch.object(self.app.root, "clipboard_clear") as clear, patch.object(self.app.root, "clipboard_append") as append, patch.object(self.app.root, "update") as update:
+            self.app._copy_password()
+        clear.assert_called_once_with()
+        append.assert_called_once_with("copy-this-password")
+        update.assert_called_once_with()
+
     def test_password_toggle_preserves_value(self):
         password = self.app.password.get()
         self.assertEqual(self.app.password_entry.cget("show"), "*")
