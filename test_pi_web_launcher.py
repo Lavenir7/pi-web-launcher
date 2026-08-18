@@ -26,6 +26,13 @@ class LauncherCoreTests(unittest.TestCase):
         with patch.object(launcher.sys, "frozen", True, create=True), patch.object(launcher.sys, "executable", "C:/launcher/PiWebLauncher.exe"):
             self.assertEqual(launcher.project_dir(), Path("C:/launcher"))
 
+    def test_resource_path_uses_pyinstaller_bundle_directory(self):
+        with patch.object(launcher.sys, "_MEIPASS", "C:/bundle", create=True):
+            self.assertEqual(
+                launcher.resource_path("assets/pi-web-launcher-icon.ico"),
+                Path("C:/bundle/assets/pi-web-launcher-icon.ico"),
+            )
+
     def test_normalize_config_uses_defaults_for_missing_values(self):
         config = launcher.normalize_config({"port": 30141})
         self.assertEqual(config["hostname"], launcher.DEFAULT_HOSTNAME)

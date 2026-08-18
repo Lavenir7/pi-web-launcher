@@ -64,6 +64,13 @@ def project_dir() -> Path:
     return Path(__file__).resolve().parent
 
 
+def resource_path(relative_path: str) -> Path:
+    bundle_dir = getattr(sys, "_MEIPASS", None)
+    if bundle_dir:
+        return Path(bundle_dir) / relative_path
+    return project_dir() / relative_path
+
+
 def agent_dir() -> Path:
     configured = os.environ.get("PI_CODING_AGENT_DIR")
     if configured:
@@ -424,6 +431,12 @@ class LauncherApp:
         self.password_visible = False
 
         self.root.title("Pi Web Launcher")
+        icon_path = resource_path("assets/pi-web-launcher-icon.ico")
+        if icon_path.exists():
+            try:
+                self.root.iconbitmap(default=str(icon_path))
+            except tk.TclError:
+                pass
         self.root.resizable(False, False)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
