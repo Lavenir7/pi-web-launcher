@@ -316,6 +316,51 @@ def strict_service_check(hostname: str, port: int, timeout: float = 0.75) -> boo
         connection.close()
 
 
+def listening_pid(port: int) -> int | None:
+    if sys.platform != "win32":
+        return None
+    try:
+        result = subprocess.run(
+            ["netstat", "-ano", "-p", "tcp"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except OSError:
+        return None
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        if len(fields) < 5 or fields[0].upper() != "TCP":
+            continue
+        if fields[-2].upper() != "LISTENING":
+            continue
+        local_endpoint = fields[1].rsplit(":", 1)
+        if len(local_endpoint) != 2 or local_endpoint[1] != str(port):
+            continue
+        try:
+            return int(fields[-1])
+        except ValueError:
+            continue
+    return None
+
+
+def process_id_is_running(pid: int) -> bool:
+    if sys.platform != "win32":
+        return False
+    try:
+        result = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except OSError:
+        return False
+    return any(len(fields) >= 2 and fields[1] == str(pid) for fields in (line.split() for line in result.stdout.splitlines()))
+
+
 def wait_for_ready(hostname: str, port: int, process: subprocess.Popen[Any], timeout: float = PI_WEB_READY_TIMEOUT) -> None:
     deadline = time.monotonic() + timeout
     target = readiness_host(hostname)
@@ -356,6 +401,8 @@ class PiWebProcess:
         self.cwd = cwd or project_dir()
         self._popen = popen
         self.process: subprocess.Popen[Any] | None = None
+        self.external_pid: int | None = None
+        self.external_endpoint: tuple[str, int] | None = None
         self.running_config: dict[str, Any] | None = None
 
     @staticmethod
@@ -366,9 +413,16 @@ class PiWebProcess:
             return [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/c", *args]
         return args
 
+    def adopt(self, config: dict[str, Any]) -> None:
+        hostname, port = endpoint_config(config)
+        self.process = None
+        self.external_pid = listening_pid(port)
+        self.external_endpoint = (hostname, port)
+        self.running_config = normalize_config(config)
+
     def start(self, config: dict[str, Any]) -> None:
         hostname, port, model = validate_config(config)
-        if self.process is not None and self.process.poll() is None:
+        if self.is_running():
             raise LauncherError("pi-web 已经在运行。")
         if port_is_open(hostname, port):
             raise LauncherError(f"端口 {port} 已被占用，请更换端口或停止占用它的程序。")
@@ -392,6 +446,8 @@ class PiWebProcess:
         except OSError as exc:
             raise LauncherError("找不到 pi-web.cmd，请确认 pi-web 已安装并在 PATH 中。") from exc
         self.process = process
+        self.external_pid = None
+        self.external_endpoint = None
         try:
             wait_for_ready(hostname, port, process)
         except BaseException:
@@ -401,12 +457,18 @@ class PiWebProcess:
 
     def stop(self, config: dict[str, Any] | None = None, wait_for_port: bool = True) -> None:
         process = self.process
-        if process is None:
+        pid = getattr(process, "pid", None) if process is not None else self.external_pid
+        if process is None and pid is None and config is not None:
+            _, port = endpoint_config(config)
+            pid = listening_pid(port)
+        if process is None and pid is None:
             self.running_config = None
+            self.external_endpoint = None
             return
-        pid = getattr(process, "pid", None)
         try:
-            if process.poll() is None:
+            process_running = process is not None and process.poll() is None
+            external_running = process is None and pid is not None and process_id_is_running(pid)
+            if process_running or external_running:
                 if sys.platform == "win32" and pid:
                     result = subprocess.run(
                         ["taskkill", "/PID", str(pid), "/T", "/F"],
@@ -415,24 +477,34 @@ class PiWebProcess:
                         timeout=15,
                         check=False,
                     )
-                    if result.returncode != 0 and process.poll() is None:
-                        process.kill()
-                else:
+                    if result.returncode != 0:
+                        if process is not None and process.poll() is None:
+                            process.kill()
+                        elif external_running:
+                            raise LauncherError("无法停止检测到的 pi-web 进程，请尝试以管理员身份运行启动器。")
+                elif process is not None:
                     process.terminate()
-                try:
-                    process.wait(timeout=15)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=5)
+                if process is not None:
+                    try:
+                        process.wait(timeout=15)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=5)
             if wait_for_port and config is not None:
-                hostname, port, _ = validate_config(config)
+                hostname, port = endpoint_config(config)
                 wait_for_port_closed(hostname, port)
         finally:
             self.process = None
+            self.external_pid = None
+            self.external_endpoint = None
             self.running_config = None
 
     def is_running(self) -> bool:
-        return self.process is not None and self.process.poll() is None
+        if self.process is not None:
+            return self.process.poll() is None
+        if self.external_endpoint is not None:
+            return strict_service_check(*self.external_endpoint)
+        return False
 
 
 class LauncherApp:
@@ -722,15 +794,22 @@ class LauncherApp:
             self.service_detected = True
             self.service_endpoint = (hostname, port)
             self.running_urls = access_urls(hostname, port)
-            if self.state == STATE_RUNNING:
-                self._set_status("pi-web 运行中", "success")
+            if self.state == STATE_STOPPED:
+                self.controller.adopt(self._form_config())
+                self.state = STATE_RUNNING
+                self._set_status("检测到 pi-web 正在运行，已接管控制", "success")
+                self.root.after(1000, self._monitor_process)
             else:
-                self._set_status("检测到 pi-web 正在运行（由其他进程启动）", "success")
+                self._set_status("pi-web 运行中", "success")
             self.address.set("绑定地址：http://%s:%s\n访问地址：%s" % (hostname, port, "\n".join(self.running_urls)))
         else:
             self.service_detected = False
             self.service_endpoint = None
-            if self.state == STATE_STOPPED:
+            if self.state == STATE_STOPPED or (self.state == STATE_RUNNING and self.controller.process is None):
+                self.controller.external_pid = None
+                self.controller.external_endpoint = None
+                self.controller.running_config = None
+                self.state = STATE_STOPPED
                 self.running_urls = []
                 self._set_status("未检测到正在运行的 pi-web", "muted")
                 self.address.set("访问地址：未启动")
@@ -845,6 +924,8 @@ class LauncherApp:
             return
         if not self.controller.is_running():
             self.controller.process = None
+            self.controller.external_pid = None
+            self.controller.external_endpoint = None
             self.controller.running_config = None
             self.running_urls = []
             self.service_detected = False

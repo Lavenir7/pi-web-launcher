@@ -66,6 +66,24 @@ class LauncherCoreTests(unittest.TestCase):
         with patch.object(launcher.http.client, "HTTPConnection", FailingConnection):
             self.assertFalse(launcher.strict_service_check("127.0.0.1", 30141))
 
+    def test_listening_pid_parses_windows_netstat(self):
+        output = "  TCP    0.0.0.0:30141    0.0.0.0:0    LISTENING    4321\n"
+        result = type("Result", (), {"stdout": output})()
+        with patch.object(launcher.sys, "platform", "win32"), patch.object(launcher.subprocess, "run", return_value=result):
+            self.assertEqual(launcher.listening_pid(30141), 4321)
+            self.assertIsNone(launcher.listening_pid(30142))
+
+    def test_controller_adopts_detected_service(self):
+        config = launcher.default_config()
+        config.update({"image_model": "image-a", "port": "30141"})
+        controller = launcher.PiWebProcess()
+        with patch.object(launcher, "listening_pid", return_value=4321), patch.object(launcher, "strict_service_check", return_value=True):
+            controller.adopt(config)
+            self.assertTrue(controller.is_running())
+        self.assertEqual(controller.external_pid, 4321)
+        self.assertEqual(controller.external_endpoint, ("127.0.0.1", 30141))
+        self.assertEqual(controller.running_config["port"], "30141")
+
     def test_project_dir_uses_executable_directory_when_frozen(self):
         with patch.object(launcher.sys, "frozen", True, create=True), patch.object(launcher.sys, "executable", "C:/launcher/PiWebLauncher.exe"):
             self.assertEqual(launcher.project_dir(), Path("C:/launcher"))
@@ -247,8 +265,13 @@ class LauncherUiTests(unittest.TestCase):
         with patch.object(launcher, "strict_service_check", return_value=True), patch.object(self.app.root, "after") as after:
             self.app.refresh_status()
             after.assert_called_once()
-        self.app._status_checked("127.0.0.1", 30141, True)
+        with patch.object(self.app.controller, "adopt") as adopt:
+            self.app._status_checked("127.0.0.1", 30141, True)
+        adopt.assert_called_once()
         self.assertTrue(self.app.service_detected)
+        self.assertEqual(self.app.state, launcher.STATE_RUNNING)
+        self.assertEqual(str(self.app.stop_button.cget("state")), "normal")
+        self.assertEqual(str(self.app.restart_button.cget("state")), "normal")
         self.assertEqual(str(self.app.open_button.cget("state")), "normal")
 
     def test_status_button_uses_disabled_state_while_checking(self):
