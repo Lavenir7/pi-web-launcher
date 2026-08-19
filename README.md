@@ -2,37 +2,59 @@
 
 [简体中文](./README.zh-CN.md) | English
 
-Pi Web Launcher is a Windows desktop application for configuring and managing a locally installed [pi-web](https://github.com/agegr/pi-web). It provides a graphical interface for selecting an image-generation model, setting the hostname, port, and access password, and starting, stopping, or restarting pi-web.
+Pi Web Launcher is a Windows desktop and system-tray launcher for a locally installed [pi-web](https://github.com/agegr/pi-web). It provides a graphical way to choose an image model, configure access settings, and start, stop, restart, detect, or open pi-web.
 
-## Requirements
+## What it does
 
-- Windows
+- Discovers available image-generation models from the configured CLIProxyAPI provider.
+- Supports discovered models and manually entered model names.
+- Configures hostname, port, and optional password protection.
+- Starts, stops, restarts, detects, and opens the local pi-web service.
+- Displays local and LAN access addresses.
+- Runs in the Windows notification area with status icons and quick actions.
+- Saves user settings under `%LOCALAPPDATA%\Pi Web Launcher`.
+
+## Installation
+
+### 1. Install the prerequisites
+
+You need:
+
+- Windows 10 or newer
 - Node.js 22.19.0 or newer
 - pi-web installed globally
 - CLIProxyAPI configured in Pi
 
-Python is not required when using `PiWebLauncher.exe`. Python 3.10 or newer with Tkinter is required only when running from source.
-
-Install pi-web if needed:
+Install pi-web from PowerShell if needed:
 
 ```powershell
 npm install -g @agegr/pi-web@latest
 ```
 
+### 2. Install Pi Web Launcher
+
+1. Download `PiWebLauncher-v1.0.0-windows-x64.zip` from the GitHub Releases page.
+2. Extract the complete ZIP to a directory of your choice.
+3. Run `PiWebLauncher.exe` inside the extracted `PiWebLauncher` directory.
+
+Keep the complete directory together. The portable release includes its required runtime, so Python does not need to be installed.
+
 ## Usage
 
-1. Download `PiWebLauncher.exe` from the `dist` directory, or download and clone this repository.
-2. Double-click `PiWebLauncher.exe` to open the launcher without a terminal window.
-3. If running from source, use `start-pi-web-launcher.cmd` or run:
+1. Choose a discovered image model, or type a custom model name into the model field.
+2. Set the hostname and port:
+   - `127.0.0.1` allows access from this computer only.
+   - `0.0.0.0` allows access from other devices on the local network and requires confirmation when starting.
+3. Keep password protection enabled unless you intentionally need unauthenticated access. The pi-web username is `pi`.
+4. Click **Start**. The launcher opens pi-web in the default browser when it is ready.
+5. Use **Detect Connection**, **Open**, **Restart**, or **Stop** as needed.
+6. Close the window to keep the launcher running in the notification area.
 
-   ```powershell
-   python .\pi_web_launcher.py
-   ```
+Tray controls:
 
-4. Select an image model and configure the hostname, port, and password. Use **Generate** to create a random 16-character password, or **Copy** to copy the current password.
-5. Click **Start**. The launcher opens pi-web in your browser when the service is ready.
-6. Use **Refresh Status** to perform a strict status check at startup or at any time, **Restart** to apply changed settings, **Open** to reopen the running service, and **Stop** to shut it down.
+- **Single-click while stopped:** start pi-web with the saved configuration.
+- **Single-click while running:** open pi-web.
+- **Double-click:** show the launcher window.
+- **Right-click:** show the window, start or stop pi-web, open pi-web, or exit.
 
-The Basic Auth username is `pi`. The default password is `123456`; change it before allowing access from other devices.
-
-Binding to `0.0.0.0` exposes pi-web to your local network. Use it only on a trusted network, and do not expose pi-web directly to the public internet over HTTP.
+Do not expose pi-web directly to the public internet over HTTP. Use `0.0.0.0` only on a trusted local network.

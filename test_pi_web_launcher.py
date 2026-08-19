@@ -100,13 +100,52 @@ class LauncherCoreTests(unittest.TestCase):
         self.assertEqual(config["hostname"], launcher.DEFAULT_HOSTNAME)
         self.assertEqual(config["port"], "30141")
         self.assertEqual(config["password"], launcher.DEFAULT_PASSWORD)
+        self.assertTrue(config["password_enabled"])
         self.assertEqual(config["model_mode"], "list")
+
+    def test_normalize_config_defaults_invalid_legacy_password_switch_and_blank_hostname(self):
+        config = launcher.normalize_config({"hostname": "", "password_enabled": "false"})
+        self.assertEqual(config["hostname"], launcher.DEFAULT_HOSTNAME)
+        self.assertTrue(config["password_enabled"])
+        disabled = launcher.normalize_config({"hostname": "  ", "password_enabled": False})
+        self.assertEqual(disabled["hostname"], launcher.DEFAULT_HOSTNAME)
+        self.assertFalse(disabled["password_enabled"])
+
+    def test_installed_config_path_and_legacy_migration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            destination = launcher.installed_config_path(root / "LocalAppData")
+            legacy = root / "legacy.json"
+            legacy.write_text(json.dumps({"hostname": "", "port": 30141, "password": "keep", "image_model": "image-a"}), encoding="utf-8")
+            self.assertTrue(launcher.migrate_legacy_config(destination, legacy))
+            migrated = launcher.load_launcher_config(destination)
+            self.assertEqual(migrated["hostname"], launcher.DEFAULT_HOSTNAME)
+            self.assertEqual(migrated["password"], "keep")
+            self.assertTrue(migrated["password_enabled"])
+            self.assertFalse(launcher.migrate_legacy_config(destination, legacy))
+            self.assertEqual(launcher.launcher_config_path(root), root / launcher.CONFIG_FILENAME)
+            with patch.dict(launcher.os.environ, {"LOCALAPPDATA": str(root / "PortableData")}, clear=False), patch.object(launcher.sys, "frozen", True, create=True):
+                self.assertEqual(launcher.launcher_config_path(), root / "PortableData" / launcher.APP_CONFIG_DIRNAME / launcher.CONFIG_FILENAME)
+
+    def test_migration_ignores_malformed_legacy_json(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            legacy = root / "legacy.json"
+            destination = root / "destination.json"
+            legacy.write_text("{not json", encoding="utf-8")
+            self.assertFalse(launcher.migrate_legacy_config(destination, legacy))
+            self.assertFalse(destination.exists())
 
     def test_save_and_load_config_round_trip(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"
             source = launcher.default_config()
-            source.update({"model_mode": "custom", "custom_image_model": "image-x", "image_models": ["image-a"]})
+            source.update({
+                "model_mode": "custom",
+                "custom_image_model": "image-x",
+                "image_models": ["image-a"],
+                "password_enabled": False,
+            })
             launcher.save_launcher_config(path, source)
             self.assertEqual(launcher.load_launcher_config(path), source)
 
@@ -191,6 +230,39 @@ class LauncherCoreTests(unittest.TestCase):
         if launcher.sys.platform == "win32":
             self.assertTrue(kwargs["creationflags"] & getattr(launcher.subprocess, "CREATE_NO_WINDOW", 0))
 
+    def test_process_start_omits_password_when_protection_is_disabled(self):
+        class FakeProcess:
+            pid = 1234
+
+            def poll(self):
+                return None
+
+        calls = []
+
+        def fake_popen(command, **kwargs):
+            calls.append((command, kwargs))
+            return FakeProcess()
+
+        config = launcher.default_config()
+        config.update({"image_model": "image-a", "password": "retained-secret", "password_enabled": False})
+        with patch.object(launcher, "port_is_open", return_value=False), patch.object(launcher, "wait_for_ready"):
+            launcher.PiWebProcess(popen=fake_popen).start(config)
+        self.assertNotIn("PI_WEB_PASSWORD", calls[0][1]["env"])
+
+    def test_tray_state_and_tooltip_redact_password(self):
+        config = launcher.default_config()
+        config.update({"image_model": "x" * 50, "password": "private-value", "password_enabled": False})
+        self.assertEqual(launcher.tray_state_for(launcher.STATE_STOPPED), launcher.TRAY_STATE_IDLE)
+        self.assertEqual(launcher.tray_state_for(launcher.STATE_STARTING), launcher.TRAY_STATE_BUSY)
+        self.assertEqual(launcher.tray_state_for(launcher.STATE_RUNNING), launcher.TRAY_STATE_RUNNING)
+        self.assertEqual(launcher.tray_state_for(launcher.STATE_RUNNING, True), launcher.TRAY_STATE_ERROR)
+        tooltip = launcher.tray_tooltip(launcher.STATE_RUNNING, config, ["http://127.0.0.1:30141"])
+        self.assertIn("http://127.0.0.1:30141", tooltip)
+        self.assertIn("密码保护：已关闭", tooltip)
+        self.assertNotIn("private-value", tooltip)
+        self.assertLessEqual(len(tooltip), 127)
+        self.assertEqual(launcher.protection_status(config), "密码保护已关闭")
+
     def test_access_urls_map_wildcard_to_local_and_lan_addresses(self):
         with patch.object(launcher, "local_network_addresses", return_value=["192.168.1.8"]):
             self.assertEqual(
@@ -223,11 +295,20 @@ class LauncherUiTests(unittest.TestCase):
         self.temporary_directory.cleanup()
 
     def test_dark_theme_and_disabled_styles_are_configured(self):
+        self.root.deiconify()
+        self.root.update_idletasks()
+        self.assertLess(self.root.winfo_reqwidth(), 590)
+        self.root.withdraw()
         style = launcher.ttk.Style(self.root)
         self.assertEqual(style.theme_use(), "clam")
         self.assertEqual(self.root.cget("background"), launcher.DARK_COLORS["window"])
         self.assertEqual(style.lookup("TFrame", "background"), launcher.DARK_COLORS["window"])
         self.assertEqual(style.lookup("TEntry", "fieldbackground"), launcher.DARK_COLORS["field"])
+        self.assertEqual(style.lookup("TCombobox", "background", ("readonly",)), launcher.DARK_COLORS["field"])
+        self.assertEqual(style.lookup("TCombobox", "fieldbackground", ("readonly",)), launcher.DARK_COLORS["field"])
+        self.assertEqual(style.lookup("TCombobox", "insertcolor"), launcher.DARK_COLORS["text"])
+        self.assertEqual(style.lookup("TCombobox", "bordercolor", ("focus",)), launcher.DARK_COLORS["accent"])
+        self.assertEqual(style.lookup("TCombobox", "fieldbackground", ("focus",)), launcher.DARK_COLORS["field"])
         self.assertEqual(style.lookup("TButton", "foreground", ("disabled",)), launcher.DARK_COLORS["disabled"])
         self.assertEqual(style.lookup("Success.Status.TLabel", "foreground"), launcher.DARK_COLORS["success"])
         popdown = self.root.tk.call("ttk::combobox::PopdownWindow", str(self.app.model_combo))
@@ -243,37 +324,88 @@ class LauncherUiTests(unittest.TestCase):
         self.assertTrue(password.isalnum())
         self.assertNotEqual(password, launcher.DEFAULT_PASSWORD)
 
-    def test_copy_password_uses_tk_clipboard(self):
+    def test_copy_password_uses_tk_clipboard_and_shows_feedback(self):
         self.app.password.set("copy-this-password")
-        with patch.object(self.app.root, "clipboard_clear") as clear, patch.object(self.app.root, "clipboard_append") as append, patch.object(self.app.root, "update") as update:
+        with patch.object(self.app.root, "clipboard_clear") as clear, patch.object(self.app.root, "clipboard_append") as append, patch.object(self.app.root, "update") as update, patch.object(self.app.root, "after", return_value="feedback-id") as after:
             self.app._copy_password()
         clear.assert_called_once_with()
         append.assert_called_once_with("copy-this-password")
         update.assert_called_once_with()
+        after.assert_called_once_with(1600, self.app._clear_copy_feedback)
+        self.assertEqual(self.app.copy_feedback.get(), "已复制")
+        self.assertEqual(self.app.password_copy._icon, "check")
+        self.app._clear_copy_feedback()
+        self.assertEqual(self.app.copy_feedback.get(), "")
+        self.assertEqual(self.app.password_copy._icon, "copy")
 
     def test_password_toggle_preserves_value(self):
         password = self.app.password.get()
         self.assertEqual(self.app.password_entry.cget("show"), "*")
-        self.assertEqual(self.app.password_toggle.cget("text"), "显示")
+        self.assertEqual(self.app.password_toggle._icon, "eye")
         self.app._toggle_password()
         self.assertEqual(self.app.password_entry.cget("show"), "")
-        self.assertEqual(self.app.password_toggle.cget("text"), "隐藏")
+        self.assertEqual(self.app.password_toggle._icon, "eye-off")
+        self.assertEqual(self.app.password_toggle._tooltip_text, "隐藏密码")
         self.assertEqual(self.app.password.get(), password)
         self.app._toggle_password()
         self.assertEqual(self.app.password_entry.cget("show"), "*")
+        self.assertEqual(self.app.password_toggle._icon, "eye")
         self.assertEqual(self.app.password.get(), password)
 
-    def test_model_selector_and_refresh_share_a_row(self):
+    def test_password_copy_and_eye_icons_are_inside_field_on_the_right(self):
+        self.assertIs(self.app.password_copy.master, self.app.password_toggle.master)
+        self.assertIs(self.app.password_entry.master, self.app.password_toggle.master)
+        self.assertEqual(self.app.password_copy._icon, "copy")
+        self.assertEqual(self.app.password_toggle._icon, "eye")
+        self.assertEqual(self.app.password_copy.place_info()["anchor"], "e")
+        self.assertEqual(self.app.password_toggle.place_info()["anchor"], "e")
+        self.assertLess(int(self.app.password_copy.place_info()["x"]), int(self.app.password_toggle.place_info()["x"]))
+
+    def test_editable_model_selector_and_refresh_share_a_row(self):
         self.assertIs(self.app.model_combo.master, self.app.refresh_button.master)
         self.assertEqual(int(self.app.model_combo.grid_info()["row"]), 0)
         self.assertEqual(int(self.app.refresh_button.grid_info()["row"]), 0)
         self.assertEqual(int(self.app.model_combo.grid_info()["column"]), 0)
         self.assertEqual(int(self.app.refresh_button.grid_info()["column"]), 1)
+        self.assertEqual(str(self.app.model_combo.cget("state")), "normal")
+        self.assertFalse(hasattr(self.app, "custom_entry"))
+        self.assertEqual(self.app.refresh_button._icon, "refresh")
+        self.assertEqual(self.app.refresh_button._tooltip_text, "更新模型列表")
+        self.assertLessEqual(int(self.app.model_combo.cget("width")), 30)
+        self.app.config["image_models"] = ["image-a"]
+        self.app.model_value.set("manual-image")
+        config = self.app._form_config()
+        self.assertEqual(config["model_mode"], "custom")
+        self.assertEqual(config["custom_image_model"], "manual-image")
 
-    def test_status_button_is_at_bottom_left_and_status_check_updates_ui(self):
-        self.assertEqual(str(self.app.refresh_status_button.cget("text")), "刷新状态")
+    def test_hostname_shortcuts_and_password_switch_preserve_value(self):
+        self.assertEqual(tuple(self.app.hostname_combo.cget("values")), launcher.HOSTNAME_CHOICES)
+        self.assertEqual(str(self.app.hostname_combo.cget("state")), "normal")
+        self.assertEqual(self.app.model_combo.cget("style"), "")
+        password = self.app.password.get()
+        self.assertEqual(int(self.app.password_switch.cget("width")), launcher.PasswordProtectionSwitch.WIDTH)
+        self.assertEqual(int(self.app.password_switch.cget("height")), launcher.PasswordProtectionSwitch.HEIGHT)
+        self.app._toggle_password_protection()
+        self.assertFalse(self.app.password_enabled.get())
+        self.assertFalse(self.app.password_switch._enabled)
+        self.assertEqual(str(self.app.password_entry.cget("state")), "disabled")
+        self.assertEqual(self.app.password.get(), password)
+        self.app._toggle_password_protection()
+        self.assertTrue(self.app.password_enabled.get())
+        self.assertTrue(self.app.password_switch._enabled)
+        self.assertEqual(str(self.app.password_entry.cget("state")), "normal")
+
+    def test_username_hint_is_on_password_title_row_at_the_right(self):
+        self.assertIs(self.app.username_hint.master, self.app.password_switch.master)
+        self.assertIs(self.app.copy_feedback_label.master, self.app.password_switch.master)
+        self.assertEqual(str(self.app.username_hint.cget("text")), "Pi Web 用户名: pi")
+        self.assertEqual(self.app.username_hint.grid_info()["sticky"], "e")
+        self.assertGreater(int(self.app.username_hint.grid_info()["column"]), int(self.app.password_switch.grid_info()["column"]))
+
+    def test_status_link_is_at_bottom_left_and_status_check_updates_ui(self):
+        self.assertEqual(str(self.app.refresh_status_button.cget("text")), "🔗 检测连接")
         self.assertEqual(int(self.app.refresh_status_button.grid_info()["column"]), 0)
-        self.assertEqual(int(self.app.refresh_status_button.cget("width")), 9)
+        self.assertEqual(str(self.app.refresh_status_button.cget("cursor")), "hand2")
         self.assertEqual(int(self.app.stop_button.cget("width")), 9)
         self.assertEqual(int(self.app.restart_button.cget("width")), 9)
         self.assertEqual(int(self.app.start_button.cget("width")), 9)
