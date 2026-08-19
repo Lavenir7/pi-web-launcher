@@ -1,4 +1,5 @@
 .pi/
+openspec/
 __pycache__/
 *.py[cod]
 pi-web-launcher.json
